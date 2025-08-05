@@ -4,6 +4,7 @@
 
 module Main (main) where
 
+import Control.Concurrent (forkIO)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Void
@@ -47,8 +48,11 @@ handleClient socket = loop BS.empty
   loop buffer = do
     maybeData <- recv socket 4096
     case maybeData of
-      Nothing -> return ()
-      Just newData -> processInput (buffer <> newData)
+      Nothing -> return () -- Client disconnected
+      Just newData ->
+        if BS.null newData
+          then return () -- Connection closed
+          else processInput (buffer <> newData)
 
   processInput input =
     case runParser resp "" input of
@@ -74,6 +78,7 @@ main = do
 
   serve HostAny port $ \(socket, address) -> do
     putStrLn $ "successfully connected client: " ++ show address
-    handleClient socket
-    closeSock socket
-
+    forkIO $ do
+      handleClient socket
+      closeSock socket
+    return ()
