@@ -4,7 +4,8 @@
 
 module Main (main) where
 
-import Network.Simple.TCP (HostPreference (HostAny), closeSock, serve)
+import qualified Data.ByteString as BS
+import Network.Simple.TCP (HostPreference (HostAny), closeSock, recv, send, serve)
 import System.IO (BufferMode (NoBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
 
 main :: IO ()
@@ -21,4 +22,13 @@ main = do
   putStrLn $ "Redis server listening on port " ++ port
   serve HostAny port $ \(socket, address) -> do
     putStrLn $ "successfully connected client: " ++ show address
+    maybeMsg <- recv socket 4096
+    case maybeMsg of
+      Nothing -> putStrLn "Nothing to see here"
+      Just msg
+        | BS.null msg -> print "Empty message"
+        | BS.length msg > 100 -> print "Large message"
+        | msg == "*1\r\n$4\r\nPING\r\n" -> print "+PONG\r\n"
+        | otherwise -> print "Received normal message"
+
     closeSock socket
