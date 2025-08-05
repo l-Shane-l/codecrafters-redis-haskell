@@ -16,8 +16,7 @@ dependencies:
   # Parsing libs
   - megaparsec
   - parser-combinators
-  - parsec
-  - attoparsec
+
 
 executables:
   codecrafters-redis-exe:
