@@ -5,7 +5,7 @@
 module Main (main) where
 
 import qualified Data.ByteString as BS
-import Network.Simple.TCP (HostPreference (HostAny), closeSock, recv, send, serve)
+import Network.Simple.TCP (HostPreference (HostAny), Socket, closeSock, recv, send, serve)
 import System.IO (BufferMode (NoBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
 
 main :: IO ()
@@ -26,11 +26,14 @@ main = do
     case maybeMsg of
       Nothing -> putStrLn "Nothing to see here"
       Just msg
-        | BS.null msg -> print "Empty message"
-        | BS.length msg > 100 -> print "Large message"
-        | msg == "*1\r\n$4\r\nPING\r\n" -> do
-            print "+PONG\r\n"
-            send socket "+PONG\r\n"
-        | otherwise -> print "Received normal message"
+        | BS.null msg -> sendAndPrint "Empty message" socket
+        | BS.length msg > 100 -> sendAndPrint "Large message" socket
+        | msg == "*1\r\n$4\r\nPING\r\n" -> sendAndPrint "+PONG\r\n" socket
+        | otherwise -> sendAndPrint "Received normal message" socket
 
     closeSock socket
+
+sendAndPrint :: BS.ByteString -> Socket -> IO ()
+sendAndPrint msg socket = do
+  print msg
+  send socket msg
