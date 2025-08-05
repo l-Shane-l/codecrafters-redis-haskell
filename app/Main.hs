@@ -28,7 +28,9 @@ main = do
       Just msg
         | BS.null msg -> print "Empty message"
         | BS.length msg > 100 -> print "Large message"
-        | msg == "*1\r\n$4\r\nPING\r\n" -> print "+PONG\r\n"
+        | msg == "*1\r\n$4\r\nPING\r\n" -> do
+            print "+PONG\r\n"
+            send socket "+PONG\r\n"
         | otherwise -> print "Received normal message"
 
     closeSock socket
