@@ -5,10 +5,11 @@
 module Main (main) where
 
 import Control.Concurrent (forkIO)
+import Control.Monad (forever)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Void
-import Network.Simple.TCP (HostPreference (HostAny), Socket, closeSock, recv, send, serve)
+import Network.Simple.TCP (HostPreference (HostAny), Socket, accept, closeSock, listen, recv, send)
 import System.IO (BufferMode (NoBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
 import Text.Megaparsec
 import Text.Megaparsec.Byte
@@ -76,9 +77,10 @@ main = do
   let port = "6379"
   putStrLn $ "Redis server listening on port " ++ port
 
-  serve HostAny port $ \(socket, address) -> do
-    putStrLn $ "successfully connected client: " ++ show address
-    forkIO $ do
-      handleClient socket
-      closeSock socket
-    return ()
+  listen HostAny port $ \(lsocket, _) -> forever $ do
+    accept lsocket $ \(socket, address) -> do
+      putStrLn $ "successfully connected client: " ++ show address
+      forkIO $ do
+        handleClient socket
+        closeSock socket
+
