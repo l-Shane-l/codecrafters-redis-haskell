@@ -5,10 +5,13 @@
 module Main (main) where
 
 import Control.Concurrent (forkIO)
+import Control.Concurrent.STM (TVar, atomically, modifyTVar', newTVarIO, readTVar)
 import Control.Monad (forever)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
+import qualified Data.Map as Map
+import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, getCurrentTime)
 import Data.Void
 import Network.Simple.TCP (HostPreference (HostAny), Socket, accept, closeSock, listen, recv, send)
 import System.IO (BufferMode (NoBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
@@ -16,14 +19,11 @@ import Text.Megaparsec
 import Text.Megaparsec.Byte
 import qualified Text.Megaparsec.Byte.Lexer as L
 
-import Control.Concurrent.STM (TVar, atomically, modifyTVar', newTVarIO, readTVar)
-import qualified Data.Map as Map
-
 import qualified Data.Char as BS8
 import RESP
 
 type Parser = Parsec Void ByteString
-type Store = TVar (Map.Map ByteString ByteString)
+type Store = TVar (Map.Map ByteString (ByteString, Maybe UTCTime))
 
 data RESPValue
   = Array Int [RESPValue]
@@ -36,7 +36,7 @@ data RESPValue
 data Command
   = Ping
   | Echo ByteString
-  | Set ByteString ByteString
+  | Set ByteString ByteString (Maybe Int)
   | Get ByteString
   | Unknown
   deriving (Show, Eq)
@@ -79,7 +79,12 @@ parseCommand (Array _ (BulkString cmd : args)) =
       [BulkString msg] -> Echo msg
       _ -> Unknown
     "SET" -> case args of
-      [BulkString key, BulkString val] -> Set key val
+      [BulkString key, BulkString val] -> Set key val Nothing
+      [BulkString key, BulkString val, BulkString px, BulkString ms]
+        | BS8.map BS8.toUpper px == "PX" ->
+            case BS8.readInt ms of
+              Just (milliseconds, _) -> Set key val (Just milliseconds)
+              _ -> Unknown
       _ -> Unknown
     "GET" -> case args of
       [BulkString key] -> Get key
@@ -90,14 +95,30 @@ parseCommand _ = Unknown
 executeCommand :: Command -> Store -> IO RESPValue
 executeCommand Ping _ = return $ SimpleString "PONG"
 executeCommand (Echo msg) _ = return $ BulkString msg
-executeCommand (Set key val) store = do
-  atomically $ modifyTVar' store (Map.insert key val)
+executeCommand (Set key val maybeExpiry) store = do
+  expiryTime <- case maybeExpiry of
+    Nothing -> return Nothing
+    Just ms -> do
+      now <- getCurrentTime
+      let expiryTime = addUTCTime (fromIntegral ms / 1000) now
+      return (Just expiryTime)
+
+  atomically $ modifyTVar' store (Map.insert key (val, expiryTime))
   return $ SimpleString "OK"
 executeCommand (Get key) store = do
+  now <- getCurrentTime
   maybeVal <- atomically $ Map.lookup key <$> readTVar store
+
   case maybeVal of
-    Just val -> return $ BulkString val
     Nothing -> return NilBulkString
+    Just (val, Nothing) -> return $ BulkString val -- No expiry
+    Just (val, Just expiryTime) ->
+      if now >= expiryTime
+        then do
+          -- Optionally clean up the expired key
+          atomically $ modifyTVar' store (Map.delete key)
+          return NilBulkString
+        else return $ BulkString val
 executeCommand Unknown _ = return $ Error "ERR unknown command"
 
 encodeRESP :: RESPValue -> ByteString
