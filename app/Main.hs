@@ -16,21 +16,28 @@ import Text.Megaparsec
 import Text.Megaparsec.Byte
 import qualified Text.Megaparsec.Byte.Lexer as L
 
+import Control.Concurrent.STM (TVar, atomically, modifyTVar', newTVarIO, readTVar)
+import qualified Data.Map as Map
+
 import qualified Data.Char as BS8
 import RESP
 
 type Parser = Parsec Void ByteString
+type Store = TVar (Map.Map ByteString ByteString)
 
 data RESPValue
   = Array Int [RESPValue]
   | BulkString ByteString
   | SimpleString ByteString
   | Error ByteString
+  | NilBulkString
   deriving (Show, Eq)
 
 data Command
   = Ping
   | Echo ByteString
+  | Set ByteString ByteString
+  | Get ByteString
   | Unknown
   deriving (Show, Eq)
 
@@ -71,15 +78,30 @@ parseCommand (Array _ (BulkString cmd : args)) =
     "ECHO" -> case args of
       [BulkString msg] -> Echo msg
       _ -> Unknown
+    "SET" -> case args of
+      [BulkString key, BulkString val] -> Set key val
+      _ -> Unknown
+    "GET" -> case args of
+      [BulkString key] -> Get key
+      _ -> Unknown
     _ -> Unknown
 parseCommand _ = Unknown
 
-executeCommand :: Command -> RESPValue
-executeCommand Ping = SimpleString "PONG"
-executeCommand (Echo msg) = BulkString msg
-executeCommand Unknown = Error "ERR unknown command"
+executeCommand :: Command -> Store -> IO RESPValue
+executeCommand Ping _ = return $ SimpleString "PONG"
+executeCommand (Echo msg) _ = return $ BulkString msg
+executeCommand (Set key val) store = do
+  atomically $ modifyTVar' store (Map.insert key val)
+  return $ SimpleString "OK"
+executeCommand (Get key) store = do
+  maybeVal <- atomically $ Map.lookup key <$> readTVar store
+  case maybeVal of
+    Just val -> return $ BulkString val
+    Nothing -> return NilBulkString
+executeCommand Unknown _ = return $ Error "ERR unknown command"
 
 encodeRESP :: RESPValue -> ByteString
+encodeRESP NilBulkString = "$-1\r\n"
 encodeRESP (SimpleString s) =
   BS.cons simpleStringMarker (terminate s)
 encodeRESP (Error e) =
@@ -100,8 +122,8 @@ encodeRESP (Array n items) =
     , mconcat (map encodeRESP items)
     ]
 
-handleClient :: Socket -> IO ()
-handleClient socket = loop BS.empty
+handleClient :: Socket -> Store -> IO ()
+handleClient socket store = loop BS.empty
  where
   loop buffer = do
     maybeData <- recv socket 4096
@@ -117,7 +139,8 @@ handleClient socket = loop BS.empty
       Left _ -> loop input
       Right (parsed, consumed) -> do
         let cmd = parseCommand parsed
-        let response = executeCommand cmd
+        -- The big change: executeCommand is now an IO action
+        response <- executeCommand cmd store
         send socket (encodeRESP response)
 
         let remaining = BS.drop consumed input
@@ -130,6 +153,7 @@ main = do
   hSetBuffering stdout NoBuffering
   hSetBuffering stderr NoBuffering
   hPutStrLn stderr "Logs from your program will appear here"
+  store <- newTVarIO Map.empty
 
   let port = "6379"
   putStrLn $ "Redis server listening on port " ++ port
@@ -138,6 +162,5 @@ main = do
     accept lsocket $ \(socket, address) -> do
       putStrLn $ "successfully connected client: " ++ show address
       forkIO $ do
-        handleClient socket
+        handleClient socket store
         closeSock socket
-
